@@ -1,6 +1,7 @@
 package com.highlands.ui;
 
 import com.highlands.entity.NhanVien;
+import com.highlands.entity.SanPham;
 import com.highlands.entity.Topping;
 import com.highlands.service.BanHangService;
 import com.highlands.service.BanHangService.MonThucDon;
@@ -32,6 +33,9 @@ public class TrangBanHang extends JPanel {
     private final ButtonGroup nhomDanhMuc = new ButtonGroup();
     private final JPanel luoi = new JPanel(new GridLayout(0, 3, 12, 12));
     private final JLabel nhanTrangThai = new JLabel(" ");
+    private final JButton nutLamMoi = KieuNV.nutPhu("Làm mới thực đơn");
+    private boolean dangTaiThucDon;
+    private boolean dangKiemTraMa;
     private final Map<String, ImageIcon> boNhoAnh = new HashMap<>();
 
     // --- giỏ hàng ---
@@ -87,6 +91,8 @@ public class TrangBanHang extends JPanel {
         boTim.setOpaque(false);
         boTim.add(new JLabel("Tìm kiếm:  "));
         boTim.add(oTim);
+        nutLamMoi.addActionListener(e -> taiThucDon());
+        boTim.add(nutLamMoi);
         hangTim.add(boTim, BorderLayout.EAST);
         hangDanhMuc.setOpaque(false);
         JScrollPane cuonDm = new JScrollPane(hangDanhMuc, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
@@ -116,18 +122,62 @@ public class TrangBanHang extends JPanel {
     }
 
     private void taiThucDon() {
+        if (dangTaiThucDon) return;
+        dangTaiThucDon = true;
+        nutLamMoi.setEnabled(false);
+        capNhatTong();
         nhanTrangThai.setText("Đang tải thực đơn...");
         ChayNen.chay(() -> new Object[]{banHang.layThucDon(), banHang.layTopping()}, kq -> {
             @SuppressWarnings("unchecked") List<MonThucDon> ds = (List<MonThucDon>) kq[0];
             @SuppressWarnings("unchecked") List<Topping> tp = (List<Topping>) kq[1];
             thucDon = ds;
             dsTopping = tp;
+            boNhoAnh.clear();
+            capNhatGioTheoThucDon();
+            model.fireTableDataChanged();
+            dangTaiThucDon = false;
+            nutLamMoi.setEnabled(true);
+            if (maApDung != null) kiemTraLaiMa();
+            capNhatTong();
             dungDanhMuc();
             veLuoi();
         }, ex -> {
+            dangTaiThucDon = false;
+            nutLamMoi.setEnabled(true);
+            capNhatTong();
             nhanTrangThai.setText("Không tải được thực đơn.");
             KieuNV.loi(this, ChayNen.thongDiep(ex));
         });
+    }
+
+    private void capNhatGioTheoThucDon() {
+        for (int i = 0; i < gio.size(); i++) {
+            DongGio dongCu = gio.get(i);
+            // Không tìm thấy trong thực đơn mới thì giữ sản phẩm cũ.
+            SanPham sanPhamMoi = dongCu.getSanPham();
+            for (MonThucDon mon : thucDon) {
+                SanPham sanPham = mon.sanPham();
+                if (sanPham.getId().equals(dongCu.getSanPham().getId())) {
+                    sanPhamMoi = sanPham;
+                    break;
+                }
+            }
+
+            List<Topping> toppingMoi = new ArrayList<>();
+            // Duyệt theo giỏ cũ để giữ nguyên thứ tự và số lần xuất hiện của topping.
+            for (Topping toppingCu : dongCu.getTopping()) {
+                Topping toppingThayThe = toppingCu;
+                for (Topping topping : dsTopping) {
+                    if (topping.getId().equals(toppingCu.getId())) {
+                        toppingThayThe = topping;
+                        break;
+                    }
+                }
+                toppingMoi.add(toppingThayThe);
+            }
+
+            gio.set(i, new DongGio(sanPhamMoi, toppingMoi, dongCu.getSoLuong()));
+        }
     }
 
     private void dungDanhMuc() {
@@ -396,6 +446,9 @@ public class TrangBanHang extends JPanel {
 
     /** Mọi thay đổi giỏ đều đổi mã giao dịch (tránh nhầm với lần thanh toán lỗi trước đó) và tính lại tiền. */
     private void thayDoiGio() {
+        soLanKiemTra++;
+        dangKiemTraMa = false;
+        if (maApDung == null) nhanKm.setText(" ");
         maGiaoDich = UUID.randomUUID().toString();
         model.fireTableDataChanged();
         if (gio.isEmpty()) boMa();
@@ -415,7 +468,7 @@ public class TrangBanHang extends JPanel {
         lTienHang.setText(KieuNV.tien(th));
         lGiam.setText(g.signum() > 0 ? "-" + KieuNV.tien(g) : KieuNV.tien(BigDecimal.ZERO));
         lTong.setText(KieuNV.tien(th.subtract(g)));
-        nutThanhToan.setEnabled(!gio.isEmpty());
+        nutThanhToan.setEnabled(!gio.isEmpty() && !dangTaiThucDon && !dangKiemTraMa);
     }
 
     // ================= KHUYẾN MÃI =================
@@ -423,10 +476,13 @@ public class TrangBanHang extends JPanel {
         String ma = oMa.getText().trim();
         BigDecimal th = tienHang();
         int lan = ++soLanKiemTra;
+        dangKiemTraMa = true;
+        capNhatTong();
         nhanKm.setForeground(KieuNV.CHU_PHU);
         nhanKm.setText("Đang kiểm tra...");
         ChayNen.chay(() -> banHang.kiemTraKhuyenMai(ma, th), kq -> {
             if (lan != soLanKiemTra) return;
+            dangKiemTraMa = false;
             if (kq.hopLe()) {
                 maApDung = ma;
                 giam = kq.giam();
@@ -441,6 +497,8 @@ public class TrangBanHang extends JPanel {
             capNhatTong();
         }, ex -> {
             if (lan != soLanKiemTra) return;
+            dangKiemTraMa = false;
+            capNhatTong();
             nhanKm.setForeground(KieuNV.DO_SANG);
             nhanKm.setText(ChayNen.thongDiep(ex));
         });
@@ -450,8 +508,11 @@ public class TrangBanHang extends JPanel {
         String ma = maApDung;
         BigDecimal th = tienHang();
         int lan = ++soLanKiemTra;
+        dangKiemTraMa = true;
+        capNhatTong();
         ChayNen.chay(() -> banHang.kiemTraKhuyenMai(ma, th), kq -> {
             if (lan != soLanKiemTra) return;
+            dangKiemTraMa = false;
             if (kq.hopLe()) {
                 giam = kq.giam();
                 nhanKm.setText("Đã áp dụng: " + kq.ten() + " (-" + KieuNV.tien(kq.giam()) + ")");
@@ -462,11 +523,19 @@ public class TrangBanHang extends JPanel {
                 nhanKm.setText(kq.thongBao() + " Mã đã được gỡ.");
             }
             capNhatTong();
-        }, ex -> { });
+        }, ex -> {
+            if (lan != soLanKiemTra) return;
+            dangKiemTraMa = false;
+            maApDung = null;
+            giam = BigDecimal.ZERO;
+            nhanKm.setText("Không kiểm tra được mã. Vui lòng áp dụng lại.");
+            capNhatTong();
+        });
     }
 
     private void boMa() {
         soLanKiemTra++;
+        dangKiemTraMa = false;
         maApDung = null;
         giam = BigDecimal.ZERO;
         oMa.setText("");
@@ -476,6 +545,8 @@ public class TrangBanHang extends JPanel {
 
     // ================= THANH TOÁN =================
     private void thanhToan() {
+        if (dangTaiThucDon || dangKiemTraMa) return;
+        soLanKiemTra++; // Bỏ qua kết quả kiểm tra mã cũ nếu có.
         if (gio.isEmpty()) { KieuNV.thongTin(this, "Giỏ hàng đang trống."); return; }
         BigDecimal th = tienHang();
         BigDecimal g = giam.min(th);

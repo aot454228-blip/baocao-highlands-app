@@ -19,6 +19,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
@@ -73,6 +74,52 @@ public class ThanhToanService {
     private final BanHangService banHang;
     private final TransactionTemplate ghi;
     private final TransactionTemplate doc;
+    private final TransactionTemplate ghiThanhToan;
+
+    public record BaoGia(BigDecimal tienHang, BigDecimal giam, String dauVanTay) {
+        public BigDecimal tong() { return tienHang.subtract(giam); }
+    }
+
+    public BaoGia baoGia(List<DongGio> gio, String maKhuyenMai) {
+        return doc.execute(st -> tinhBaoGia(gio, maKhuyenMai));
+    }
+
+    public HoaDon timHoaDonDaLuu(String maGiaoDich) {
+        return doc.execute(st -> thanhToanRepo.findByMaGiaoDich(maGiaoDich).map(this::dungHoaDon).orElse(null));
+    }
+
+    private BaoGia tinhBaoGia(List<DongGio> gio, String maKhuyenMai) {
+        if (gio == null || gio.isEmpty()) throw new LoiNghiepVu("Giỏ hàng đang trống");
+        BigDecimal tien = BigDecimal.ZERO;
+        List<String> dau = new ArrayList<>();
+        for (DongGio d : gio) {
+            if (d.getSoLuong() < 1 || d.getSoLuong() > 99) throw new LoiNghiepVu("Số lượng phải từ 1 đến 99");
+            SanPham sp = sanPhamRepo.findById(d.getSanPham().getId())
+                    .orElseThrow(() -> new LoiNghiepVu("Món đã bị xóa. Hãy làm mới thực đơn và kiểm tra giỏ hàng."));
+            if (sp.getGia() <= 0) throw new LoiNghiepVu("Giá sản phẩm không hợp lệ");
+            BigDecimal gia = BigDecimal.valueOf(sp.getGia());
+            List<String> tp = new ArrayList<>();
+            for (Long id : d.getTopping().stream().map(Topping::getId).distinct().sorted().toList()) {
+                Topping t = toppingRepo.findById(id)
+                        .orElseThrow(() -> new LoiNghiepVu("Topping đã bị xóa. Hãy kiểm tra lại giỏ hàng."));
+                if (t.getGia() < 0) throw new LoiNghiepVu("Giá topping không hợp lệ");
+                gia = gia.add(BigDecimal.valueOf(t.getGia()));
+                tp.add(id + ":" + t.getGia());
+            }
+            tien = tien.add(gia.multiply(BigDecimal.valueOf(d.getSoLuong())));
+            dau.add(sp.getId() + ":" + sp.getGia() + ":" + d.getSoLuong() + ":" + tp);
+        }
+        BigDecimal giam = BigDecimal.ZERO;
+        if (maKhuyenMai != null && !maKhuyenMai.isBlank()) {
+            BanHangService.ApDung km = banHang.apDung(maKhuyenMai, tien);
+            if (!km.hopLe()) throw new LoiNghiepVu(km.thongBao());
+            giam = km.giam();
+            KhuyenMai k = km.khuyenMai();
+            dau.add("KM:" + k.getId() + ":" + k.getLoai() + ":" + k.getPhanTramGiam()
+                    + ":" + k.getSoTienGiam() + ":" + k.getDonToiThieu());
+        }
+        return new BaoGia(tien, giam, dau.toString());
+    }
 
     public ThanhToanService(DonHangRepository donHangRepo, ChiTietDonHangRepository chiTietRepo,
                             ChiTietDonHangToppingRepository chiTietToppingRepo,
@@ -90,6 +137,10 @@ public class ThanhToanService {
         this.ghi = new TransactionTemplate(tm);
         this.doc = new TransactionTemplate(tm);
         this.doc.setReadOnly(true);
+        this.ghiThanhToan = new TransactionTemplate(tm);
+        // Khóa phạm vi tra mã giao dịch tới lúc commit, kể cả khi chưa có bản ghi.
+        // Không cần thêm cột hoặc ràng buộc vào database.
+        this.ghiThanhToan.setIsolationLevel(TransactionDefinition.ISOLATION_SERIALIZABLE);
     }
 
     // ===== Thanh toán =====
@@ -104,6 +155,11 @@ public class ThanhToanService {
     // phuongThuc: TIEN_MAT (cần tiền khách đưa) hoặc CHUYEN_KHOAN (khách chuyển đúng số tiền, tienKhach bỏ qua)
     public HoaDon thanhToan(Long nhanVienId, List<DongGio> gio, String maKhuyenMai,
                             BigDecimal tienKhach, String maGiaoDich, String phuongThuc) {
+        return thanhToan(nhanVienId, gio, maKhuyenMai, tienKhach, maGiaoDich, phuongThuc, null);
+    }
+
+    public HoaDon thanhToan(Long nhanVienId, List<DongGio> gio, String maKhuyenMai,
+                            BigDecimal tienKhach, String maGiaoDich, String phuongThuc, BaoGia daXacNhan) {
         if (!TIEN_MAT.equals(phuongThuc) && !CHUYEN_KHOAN.equals(phuongThuc)) {
             throw new LoiNghiepVu("Phương thức thanh toán không hợp lệ");
         }
@@ -113,14 +169,14 @@ public class ThanhToanService {
         String khoa = maGiaoDich == null ? "" : maGiaoDich.trim();
         if (khoa.isEmpty() || khoa.length() > 64) throw new LoiNghiepVu("Mã giao dịch không hợp lệ");
         if (!chuyenKhoan) {
-            if (tienKhach == null || tienKhach.signum() <= 0) throw new LoiNghiepVu("Vui lòng nhập số tiền khách đưa");
+            if (tienKhach == null || tienKhach.signum() < 0) throw new LoiNghiepVu("Vui lòng nhập số tiền khách đưa hợp lệ");
             if (tienKhach.compareTo(TIEN_KHACH_TOI_DA) > 0 || tienKhach.stripTrailingZeros().scale() > 0) {
                 throw new LoiNghiepVu("Số tiền khách đưa không hợp lệ");
             }
         }
         List<DongGio> banSao = new ArrayList<>(gio);
         try {
-            return ghi.execute(st -> luuDon(nhanVienId, banSao, maKhuyenMai, tienKhach, khoa, phuongThuc));
+            return ghiThanhToan.execute(st -> luuDon(nhanVienId, banSao, maKhuyenMai, tienKhach, khoa, phuongThuc, daXacNhan));
         } catch (DataIntegrityViolationException e) {
             // Hai lần bấm chạy song song: lần kia đã lưu xong với cùng mã giao dịch
             HoaDon daLuu = doc.execute(st -> thanhToanRepo.findByMaGiaoDich(khoa).map(this::dungHoaDon).orElse(null));
@@ -130,17 +186,22 @@ public class ThanhToanService {
     }
 
     private HoaDon luuDon(Long nhanVienId, List<DongGio> gio, String maKhuyenMai, BigDecimal tienKhach, String khoa,
-                          String phuongThuc) {
+                          String phuongThuc, BaoGia daXacNhan) {
         // Đã lưu rồi (gửi lại) -> trả đúng hóa đơn đó
         var daCo = thanhToanRepo.findByMaGiaoDich(khoa);
         if (daCo.isPresent()) return dungHoaDon(daCo.get());
+
+        BaoGia hienTai = tinhBaoGia(gio, maKhuyenMai);
+        if (daXacNhan != null && !hienTai.equals(daXacNhan)) {
+            throw new LoiNghiepVu("Giá hoặc khuyến mãi vừa thay đổi. Chưa lưu đơn; hãy kiểm tra lại và xác nhận số tiền mới.");
+        }
 
         NhanVien nv = nhanVienRepo.findById(nhanVienId)
                 .orElseThrow(() -> new LoiNghiepVu("Không tìm thấy nhân viên"));
         if (!nv.isDangLam()) throw new LoiNghiepVu("Nhân viên không còn làm việc");
 
         // 1. Dựng lại từng dòng từ CSDL (không tin giá từ giao diện)
-        record DongDaXacNhan(SanPham sp, int soLuong, List<Topping> topping, long giaTopping) {
+        record DongDaXacNhan(SanPham sp, int soLuong, List<Topping> topping) {
         }
         List<DongDaXacNhan> dong = new ArrayList<>();
         BigDecimal tienHang = BigDecimal.ZERO;
@@ -156,9 +217,11 @@ public class ThanhToanService {
                 tpDuyNhat.put(tp.getId(), tp);
             }
             List<Topping> tps = new ArrayList<>(tpDuyNhat.values());
-            long giaTp = tps.stream().mapToLong(Topping::getGia).sum();
-            dong.add(new DongDaXacNhan(sp, sl, tps, giaTp));
-            tienHang = tienHang.add(BigDecimal.valueOf((sp.getGia() + giaTp) * sl));
+            BigDecimal giaTp = tps.stream().map(t -> BigDecimal.valueOf(t.getGia()))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            dong.add(new DongDaXacNhan(sp, sl, tps));
+            tienHang = tienHang.add(BigDecimal.valueOf(sp.getGia()).add(giaTp)
+                    .multiply(BigDecimal.valueOf(sl)));
         }
 
         // 2. Khuyến mãi
@@ -428,35 +491,45 @@ public class ThanhToanService {
         return giam.min(tienHang).max(BigDecimal.ZERO);
     }
 
-    private Map<Long, List<ChiTietDonHangTopping>> toppingTheoDong(List<ChiTietDonHang> cts) {
-        Map<Long, List<ChiTietDonHangTopping>> kq = new HashMap<>();
-        if (cts.isEmpty()) return kq;
-        List<Long> ids = cts.stream().map(ChiTietDonHang::getId).toList();
-        for (ChiTietDonHangTopping t : chiTietToppingRepo.findByChiTietDonHang_IdIn(ids)) {
-            kq.computeIfAbsent(t.getChiTietDonHang().getId(), k -> new ArrayList<>()).add(t);
+    private Map<Long, List<ChiTietDonHangTopping>> toppingTheoDong(List<ChiTietDonHang> danhSachChiTiet) {
+        Map<Long, List<ChiTietDonHangTopping>> ketQua = new HashMap<>();
+        if (danhSachChiTiet.isEmpty()) {
+            return ketQua;
         }
-        return kq;
+
+        List<Long> danhSachId = new ArrayList<>();
+        for (ChiTietDonHang chiTiet : danhSachChiTiet) {
+            danhSachId.add(chiTiet.getId());
+        }
+        for (ChiTietDonHangTopping topping : chiTietToppingRepo.findByChiTietDonHang_IdIn(danhSachId)) {
+            Long chiTietId = topping.getChiTietDonHang().getId();
+            List<ChiTietDonHangTopping> danhSachTopping = ketQua.get(chiTietId);
+            if (danhSachTopping == null) {
+                danhSachTopping = new ArrayList<>();
+                ketQua.put(chiTietId, danhSachTopping);
+            }
+            danhSachTopping.add(topping);
+        }
+        return ketQua;
     }
 
     // Dựng hóa đơn từ dữ liệu đã lưu (dùng cho cả lúc vừa thanh toán và xem lại)
     private HoaDon dungHoaDon(ThanhToanDonHang tt) {
         List<ChiTietDonHang> cts = chiTietRepo.findByDonHang_IdOrderByIdAsc(tt.getDonHang().getId());
-        Map<Long, List<ChiTietDonHangTopping>> tpTheoDong = new HashMap<>();
-        if (!cts.isEmpty()) {
-            List<Long> ids = cts.stream().map(ChiTietDonHang::getId).toList();
-            for (ChiTietDonHangTopping t : chiTietToppingRepo.findByChiTietDonHang_IdIn(ids)) {
-                tpTheoDong.computeIfAbsent(t.getChiTietDonHang().getId(), k -> new ArrayList<>()).add(t);
-            }
-        }
+        Map<Long, List<ChiTietDonHangTopping>> tpTheoDong = toppingTheoDong(cts);
         List<Dong> dong = new ArrayList<>();
         for (ChiTietDonHang ct : cts) {
             List<ChiTietDonHangTopping> tps = tpTheoDong.getOrDefault(ct.getId(), List.of());
-            BigDecimal giaTp = tps.stream().map(ChiTietDonHangTopping::getGiaTopping)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal giaTopping = BigDecimal.ZERO;
+            List<String> tenTopping = new ArrayList<>();
+            for (ChiTietDonHangTopping topping : tps) {
+                giaTopping = giaTopping.add(topping.getGiaTopping());
+                tenTopping.add(topping.getTenTopping());
+            }
             BigDecimal donGia = BigDecimal.valueOf(ct.getDonGia());
+            BigDecimal thanhTien = donGia.add(giaTopping).multiply(BigDecimal.valueOf(ct.getSoLuong()));
             dong.add(new Dong(ct.getSoLuong(), ct.getSanPham().getTen(), donGia,
-                    tps.stream().map(ChiTietDonHangTopping::getTenTopping).toList(), giaTp,
-                    donGia.add(giaTp).multiply(BigDecimal.valueOf(ct.getSoLuong()))));
+                    java.util.Collections.unmodifiableList(tenTopping), giaTopping, thanhTien));
         }
         return new HoaDon(tt.getDonHang().getId(), tt.getNgayThanhToan(), tt.getNhanVien().getHoTen(), dong,
                 tt.getTienHang(), tt.getMaKhuyenMai(), tt.getGiamGia(), tt.getTongThanhToan(),

@@ -3,6 +3,8 @@ package com.highlands.ui;
 import com.highlands.service.DongGio;
 import com.highlands.service.ThanhToanService;
 import com.highlands.service.ThanhToanService.HoaDon;
+import com.highlands.service.ThanhToanService.BaoGia;
+import com.highlands.service.TienIch;
 
 import javax.swing.*;
 import java.awt.*;
@@ -15,7 +17,13 @@ class TrangThanhToan extends JDialog {
     private final Long nhanVienId;
     private final List<DongGio> gio;
     private final String maKhuyenMai;
-    private final BigDecimal tong;
+    private BigDecimal tong;
+    private BigDecimal tienHangHienThi;
+    private BigDecimal giamHienThi;
+    private final JLabel lTienHang = new JLabel();
+    private final JLabel lGiam = new JLabel();
+    private final JLabel lTong = new JLabel();
+    private final JLabel huongDan = new JLabel();
     private final String maGiaoDich;
 
     private final JTextField oKhach = new JTextField();
@@ -40,6 +48,12 @@ class TrangThanhToan extends JDialog {
         this.maKhuyenMai = maKhuyenMai;
         this.maGiaoDich = maGiaoDich;
         this.tong = tienHang.subtract(giam);
+        this.tienHangHienThi = tienHang;
+        this.giamHienThi = giam;
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosing(java.awt.event.WindowEvent e) { if (!dangXuLy) dispose(); }
+        });
 
         JPanel goc = new JPanel();
         goc.setLayout(new BoxLayout(goc, BoxLayout.Y_AXIS));
@@ -52,10 +66,13 @@ class TrangThanhToan extends JDialog {
         tieuDe.setAlignmentX(LEFT_ALIGNMENT);
         goc.add(tieuDe);
         goc.add(Box.createVerticalStrut(12));
-        goc.add(hang("Tổng tiền hàng", KieuNV.tien(tienHang), false));
+        lTienHang.setText(KieuNV.tien(tienHang));
+        lGiam.setText(KieuNV.tien(giam));
+        lTong.setText(KieuNV.tien(tong));
+        goc.add(hang("Tổng tiền hàng", lTienHang, false));
         goc.add(hang("Tiền giảm giá" + (maKhuyenMai == null ? "" : " (" + maKhuyenMai + ")"),
-                giam.signum() > 0 ? "-" + KieuNV.tien(giam) : KieuNV.tien(BigDecimal.ZERO), false));
-        goc.add(hang("TỔNG THANH TOÁN", KieuNV.tien(tong), true));
+                lGiam, false));
+        goc.add(hang("TỔNG THANH TOÁN", lTong, true));
         goc.add(Box.createVerticalStrut(12));
 
         JLabel pt = new JLabel("Phương thức thanh toán");
@@ -109,8 +126,7 @@ class TrangThanhToan extends JDialog {
         JPanel chuyenKhoan = new JPanel();
         chuyenKhoan.setLayout(new BoxLayout(chuyenKhoan, BoxLayout.Y_AXIS));
         chuyenKhoan.setOpaque(false);
-        JLabel huongDan = new JLabel("<html>Khách chuyển khoản đúng số tiền <b>" + KieuNV.tien(tong)
-                + "</b>.<br>Kiểm tra tin nhắn / ứng dụng ngân hàng rồi tick xác nhận bên dưới.</html>");
+        capNhatHuongDan();
         huongDan.setFont(KieuNV.FONT);
         huongDan.setAlignmentX(LEFT_ALIGNMENT);
         chuyenKhoan.add(huongDan);
@@ -151,11 +167,10 @@ class TrangThanhToan extends JDialog {
         SwingUtilities.invokeLater(oKhach::requestFocusInWindow);
     }
 
-    private JComponent hang(String ten, String giaTri, boolean dam) {
+    private JComponent hang(String ten, JLabel b, boolean dam) {
         JPanel h = new JPanel(new BorderLayout());
         h.setOpaque(false);
         JLabel a = new JLabel(ten);
-        JLabel b = new JLabel(giaTri);
         a.setFont(dam ? new Font("Segoe UI", Font.BOLD, 16) : KieuNV.FONT);
         b.setFont(dam ? new Font("Segoe UI", Font.BOLD, 22) : KieuNV.DAM);
         if (dam) b.setForeground(KieuNV.DO);
@@ -167,9 +182,12 @@ class TrangThanhToan extends JDialog {
     }
 
     private BigDecimal tienKhach() {
-        String so = oKhach.getText().replaceAll("\\D", "");
-        if (so.isEmpty() || so.length() > 12) return BigDecimal.ZERO;
-        return new BigDecimal(so);
+        return TienIch.docTienKhach(oKhach.getText());
+    }
+
+    private void capNhatHuongDan() {
+        huongDan.setText("<html>Khách chuyển khoản đúng số tiền <b>" + KieuNV.tien(tong)
+                + "</b>.<br>Kiểm tra tin nhắn / ứng dụng ngân hàng rồi tick xác nhận bên dưới.</html>");
     }
 
     private void datTienKhach(BigDecimal v) {
@@ -185,9 +203,17 @@ class TrangThanhToan extends JDialog {
             nutXacNhan.setEnabled(!dangXuLy && daNhanTien.isSelected());
             return;
         }
-        BigDecimal kh = tienKhach();
+        BigDecimal kh;
+        try {
+            kh = tienKhach();
+        } catch (com.highlands.service.LoiNghiepVu ex) {
+            nhanThua.setForeground(KieuNV.DO_SANG);
+            nhanThua.setText(oKhach.getText().isBlank() ? "Nhập số tiền khách đưa" : "Số tiền không hợp lệ");
+            nutXacNhan.setEnabled(false);
+            return;
+        }
         BigDecimal chenh = kh.subtract(tong);
-        if (kh.signum() == 0) {
+        if (kh.signum() == 0 && tong.signum() > 0) {
             nhanThua.setForeground(KieuNV.CHU_PHU);
             nhanThua.setText("Nhập số tiền khách đưa");
         } else if (chenh.signum() < 0) {
@@ -197,37 +223,118 @@ class TrangThanhToan extends JDialog {
             nhanThua.setForeground(KieuNV.XANH);
             nhanThua.setText("Tiền thừa: " + KieuNV.tien(chenh));
         }
-        nutXacNhan.setEnabled(!dangXuLy && kh.compareTo(tong) >= 0 && kh.signum() > 0);
+        nutXacNhan.setEnabled(!dangXuLy && kh.compareTo(tong) >= 0);
     }
 
     private void xacNhan() {
-        final boolean ck = laChuyenKhoan();
-        final String pt = ck ? ThanhToanService.CHUYEN_KHOAN : ThanhToanService.TIEN_MAT;
-        final BigDecimal kh = ck ? tong : tienKhach();
-        if (ck && !daNhanTien.isSelected()) { KieuNV.loi(this, "Hãy xác nhận đã nhận được tiền chuyển khoản."); return; }
-        if (!ck && kh.compareTo(tong) < 0) { KieuNV.loi(this, "Tiền khách đưa chưa đủ."); return; }
-        String noiDung = ck
-                ? "Xác nhận đã nhận " + KieuNV.tien(tong) + " bằng chuyển khoản?"
-                : "Xác nhận thanh toán " + KieuNV.tien(tong) + " bằng tiền mặt?\nTiền thừa trả khách: "
-                + KieuNV.tien(kh.subtract(tong));
-        if (JOptionPane.showConfirmDialog(this, noiDung, "Xác nhận", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
-        dangXuLy = true;
-        nutXacNhan.setEnabled(false);
-        nutHuy.setEnabled(false);
-        oKhach.setEnabled(false);
-        phuongThuc.setEnabled(false);
-        daNhanTien.setEnabled(false);
-        ChayNen.chay(() -> dich.thanhToan(nhanVienId, gio, maKhuyenMai, kh, maGiaoDich, pt), hd -> {
-            ketQua = hd;
-            dispose();
+        if (dangXuLy) return;
+        datDangXuLy(true);
+        // Khi lần trước mất phản hồi sau commit, lấy lại hóa đơn trước khi kiểm tra giá mới.
+        ChayNen.chay(() -> dich.timHoaDonDaLuu(maGiaoDich), hd -> {
+            if (hd != null) {
+                ketQua = hd;
+                dispose();
+            } else {
+                kiemTraGia();
+            }
         }, ex -> {
-            dangXuLy = false;
-            nutHuy.setEnabled(true);
-            oKhach.setEnabled(true);
-            phuongThuc.setEnabled(true);
-            daNhanTien.setEnabled(true);
-            capNhat();
-            KieuNV.loi(this, ChayNen.thongDiep(ex) + "\nGiỏ hàng vẫn được giữ nguyên.");
+            datDangXuLy(false);
+            KieuNV.loi(this, ChayNen.thongDiep(ex) + "\nChưa xác định kết quả. Hãy thử lại với giỏ hàng hiện tại.");
+        });
+    }
+
+    private void kiemTraGia() {
+        ChayNen.chay(() -> dich.baoGia(gio, maKhuyenMai), gia -> {
+            boolean doi = gia.tienHang().compareTo(tienHangHienThi) != 0 || gia.giam().compareTo(giamHienThi) != 0;
+            tienHangHienThi = gia.tienHang();
+            giamHienThi = gia.giam();
+            tong = gia.tong();
+            lTienHang.setText(KieuNV.tien(gia.tienHang()));
+            lGiam.setText(KieuNV.tien(gia.giam()));
+            lTong.setText(KieuNV.tien(tong));
+            capNhatHuongDan();
+            if (doi) {
+                daNhanTien.setSelected(false);
+                oKhach.setText("");
+                datDangXuLy(false);
+                KieuNV.thongTin(this, "Giá hoặc khuyến mãi đã thay đổi. Hãy kiểm tra tổng mới và xác nhận lại tiền khách trả.");
+                return;
+            }
+            luuThanhToan(gia);
+        }, ex -> {
+            datDangXuLy(false);
+            KieuNV.loi(this, ChayNen.thongDiep(ex) + "\nChưa thanh toán. Có thể quay lại giỏ để kiểm tra món hoặc mã khuyến mãi.");
+        });
+    }
+
+    private void datDangXuLy(boolean value) {
+        dangXuLy = value;
+        nutHuy.setEnabled(!value);
+        oKhach.setEnabled(!value);
+        phuongThuc.setEnabled(!value);
+        daNhanTien.setEnabled(!value);
+        for (Component c : luoiNhanh.getComponents()) c.setEnabled(!value);
+        capNhat();
+    }
+
+    private void luuThanhToan(BaoGia baoGiaDaXacNhan) {
+        final boolean chuyenKhoan = laChuyenKhoan();
+        final String phuongThucThanhToan;
+        if (chuyenKhoan) {
+            phuongThucThanhToan = ThanhToanService.CHUYEN_KHOAN;
+        } else {
+            phuongThucThanhToan = ThanhToanService.TIEN_MAT;
+        }
+
+        final BigDecimal tienKhachDua;
+        try {
+            if (chuyenKhoan) {
+                tienKhachDua = tong;
+            } else {
+                tienKhachDua = tienKhach();
+            }
+        } catch (com.highlands.service.LoiNghiepVu loi) {
+            datDangXuLy(false);
+            KieuNV.loi(this, loi.getMessage());
+            return;
+        }
+
+        if (chuyenKhoan && !daNhanTien.isSelected()) {
+            datDangXuLy(false);
+            KieuNV.loi(this, "Hãy xác nhận đã nhận được tiền chuyển khoản.");
+            return;
+        }
+        if (!chuyenKhoan && tienKhachDua.compareTo(tong) < 0) {
+            datDangXuLy(false);
+            KieuNV.loi(this, "Tiền khách đưa chưa đủ.");
+            return;
+        }
+
+        String noiDungXacNhan;
+        if (chuyenKhoan) {
+            noiDungXacNhan = "Xác nhận đã nhận " + KieuNV.tien(tong) + " bằng chuyển khoản?";
+        } else {
+            BigDecimal tienThua = tienKhachDua.subtract(tong);
+            noiDungXacNhan = "Xác nhận thanh toán " + KieuNV.tien(tong)
+                    + " bằng tiền mặt?\nTiền thừa trả khách: " + KieuNV.tien(tienThua);
+        }
+        int luaChon = JOptionPane.showConfirmDialog(
+                this, noiDungXacNhan, "Xác nhận", JOptionPane.YES_NO_OPTION);
+        if (luaChon != JOptionPane.YES_OPTION) {
+            datDangXuLy(false);
+            return;
+        }
+
+        datDangXuLy(true);
+        ChayNen.chay(() -> dich.thanhToan(
+                nhanVienId, gio, maKhuyenMai, tienKhachDua, maGiaoDich,
+                phuongThucThanhToan, baoGiaDaXacNhan), hoaDon -> {
+            ketQua = hoaDon;
+            dispose();
+        }, loi -> {
+            datDangXuLy(false);
+            String thongBaoLoi = ChayNen.thongDiep(loi) + "\nGiỏ hàng vẫn được giữ nguyên.";
+            KieuNV.loi(this, thongBaoLoi);
         });
     }
 
