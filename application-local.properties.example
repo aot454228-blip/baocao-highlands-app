@@ -1,0 +1,4 @@
+# Copy file này thành application-local.properties (cùng thư mục với pom.xml) rồi điền mật khẩu SQL Server của máy bạn.
+# application-local.properties đã nằm trong .gitignore nên sẽ không bị đẩy lên GitHub.
+spring.datasource.username=sa
+spring.datasource.password=MAT_KHAU_CUA_BAN

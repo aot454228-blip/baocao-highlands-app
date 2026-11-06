@@ -18,10 +18,11 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 
-/** Lịch sử đơn hàng đã thanh toán. Chỉ xem: không có thao tác sửa hoặc xóa. */
+/** Lịch sử đơn hàng đã thanh toán: xem chi tiết và chỉnh sửa (trạng thái, số lượng món, thông tin giao dịch). */
 public class TrangLichSuDonHang extends JPanel {
     private static final DateTimeFormatter DINH_DANG = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
-    private static final int COT_THAO_TAC = 5;
+    private static final int COT_XEM = 6;
+    private static final int COT_SUA = 7;
 
     private final ThanhToanService thanhToan;
     private final List<DonLichSu> ds = new ArrayList<>();
@@ -90,6 +91,7 @@ public class TrangLichSuDonHang extends JPanel {
         bang.getColumnModel().getColumn(2).setPreferredWidth(180);
         bang.getColumnModel().getColumn(3).setPreferredWidth(130);
         bang.getColumnModel().getColumn(4).setPreferredWidth(120);
+        bang.getColumnModel().getColumn(5).setPreferredWidth(110);
         bang.getColumnModel().getColumn(3).setCellRenderer(KieuNV.canPhai());
         DefaultTableCellRenderer lienKet = new DefaultTableCellRenderer() {
             @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean s, boolean f, int r, int c) {
@@ -100,13 +102,25 @@ public class TrangLichSuDonHang extends JPanel {
                 return this;
             }
         };
-        bang.getColumnModel().getColumn(COT_THAO_TAC).setCellRenderer(lienKet);
+        bang.getColumnModel().getColumn(COT_XEM).setCellRenderer(lienKet);
+        DefaultTableCellRenderer lienKetSua = new DefaultTableCellRenderer() {
+            @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean s, boolean f, int r, int c) {
+                boolean khoa = ThanhToanService.DA_HUY.equals(ds.get(r).trangThai());
+                super.getTableCellRendererComponent(t, khoa ? "—" : "<html><u>Chỉnh sửa</u></html>", s, f, r, c);
+                setForeground(khoa ? KieuNV.CHU_PHU : KieuNV.DO_SANG);
+                setFont(KieuNV.DAM);
+                setHorizontalAlignment(SwingConstants.CENTER);
+                return this;
+            }
+        };
+        bang.getColumnModel().getColumn(COT_SUA).setCellRenderer(lienKetSua);
         bang.addMouseListener(new MouseAdapter() {
             @Override public void mouseClicked(MouseEvent e) {
                 int r = bang.rowAtPoint(e.getPoint());
                 int c = bang.columnAtPoint(e.getPoint());
                 if (r < 0) return;
-                if (c == COT_THAO_TAC || e.getClickCount() == 2) xemChiTiet(r);
+                if (c == COT_SUA) suaDon(r);
+                else if (c == COT_XEM || e.getClickCount() == 2) xemChiTiet(r);
             }
         });
         JScrollPane cuon = new JScrollPane(bang);
@@ -159,8 +173,21 @@ public class TrangLichSuDonHang extends JPanel {
                 ex -> KieuNV.loi(this, ChayNen.thongDiep(ex)));
     }
 
+    private void suaDon(int dong) {
+        DonLichSu d = ds.get(dong);
+        if (ThanhToanService.DA_HUY.equals(d.trangThai())) {
+            KieuNV.thongTin(this, "Đơn đã hủy, không thể chỉnh sửa.");
+            return;
+        }
+        ChayNen.chay(() -> thanhToan.layDeSua(d.thanhToanId()), don -> {
+            HopThoaiSuaDon h = new HopThoaiSuaDon(SwingUtilities.getWindowAncestor(this), thanhToan, don);
+            h.setVisible(true);
+            if (h.daLuu()) lamMoi();
+        }, ex -> KieuNV.loi(this, ChayNen.thongDiep(ex)));
+    }
+
     private final class Model extends AbstractTableModel {
-        private final String[] cot = {"Mã đơn hàng", "Ngày đặt", "Nhân viên thực hiện", "Tổng tiền", "Phương thức", "Thao tác"};
+        private final String[] cot = {"Mã đơn hàng", "Ngày đặt", "Nhân viên thực hiện", "Tổng tiền", "Phương thức", "Trạng thái", "Chi tiết", "Chỉnh sửa"};
         @Override public int getRowCount() { return ds.size(); }
         @Override public int getColumnCount() { return cot.length; }
         @Override public String getColumnName(int c) { return cot[c]; }
@@ -173,7 +200,8 @@ public class TrangLichSuDonHang extends JPanel {
                 case 2 -> d.nhanVien();
                 case 3 -> KieuNV.tien(d.tong());
                 case 4 -> d.phuongThuc();
-                default -> "Xem chi tiết";
+                case 5 -> d.trangThai();
+                default -> "";
             };
         }
     }

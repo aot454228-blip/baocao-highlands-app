@@ -14,7 +14,8 @@ public interface ChiTietDonHangRepository extends JpaRepository<ChiTietDonHang, 
     // Mỗi dòng: [id sản phẩm, tên, tổng số lượng bán, tổng tiền], bán nhiều nhất xếp trước
     @Query("select s.id, s.ten, sum(c.soLuong), sum(c.soLuong * c.donGia) "
             + "from ChiTietDonHang c join c.sanPham s join c.donHang d "
-            + "where d.ngayDat between :tu and :den "
+            + "where d.ngayDat between :tu and :den"
+            + " and not exists (select 1 from ThanhToanDonHang t where t.donHang = d and t.trangThai = 'Đã hủy') "
             + "group by s.id, s.ten order by sum(c.soLuong) desc")
     List<Object[]> banChay(@Param("tu") LocalDate tu, @Param("den") LocalDate den, Pageable pageable);
 

@@ -3,6 +3,7 @@ package com.highlands.service;
 import com.highlands.entity.ChiTietDonHang;
 import com.highlands.entity.ChiTietDonHangTopping;
 import com.highlands.entity.DonHang;
+import com.highlands.entity.KhuyenMai;
 import com.highlands.entity.NhanVien;
 import com.highlands.entity.SanPham;
 import com.highlands.entity.ThanhToanDonHang;
@@ -40,6 +41,11 @@ public class ThanhToanService {
 
     public static final String TIEN_MAT = "Tiền mặt";
     public static final String CHUYEN_KHOAN = "Chuyển khoản";
+    public static final String DANG_XU_LY = "Đang xử lý";
+    public static final String DANG_GIAO = "Đang giao";
+    public static final String HOAN_THANH = "Hoàn thành";
+    public static final String DA_HUY = "Đã hủy";
+    public static final List<String> TRANG_THAI = List.of(DANG_XU_LY, DANG_GIAO, HOAN_THANH, DA_HUY);
     private static final int SO_DON_TOI_DA = 500;
     private static final BigDecimal TIEN_KHACH_TOI_DA = new BigDecimal("100000000000"); // 100 tỷ, chặn nhập nhầm
 
@@ -49,11 +55,12 @@ public class ThanhToanService {
 
     public record HoaDon(Long maDon, LocalDateTime ngay, String nhanVien, List<Dong> dong,
                          BigDecimal tienHang, String khuyenMai, BigDecimal giamGia,
-                         BigDecimal tongThanhToan, String phuongThuc, BigDecimal tienKhach, BigDecimal tienThua) {
+                         BigDecimal tongThanhToan, String phuongThuc, BigDecimal tienKhach, BigDecimal tienThua,
+                         String trangThai, String ghiChu) {
     }
 
     public record DonLichSu(Long thanhToanId, Long maDon, String nhanVien, LocalDateTime ngay,
-                            BigDecimal tong, String phuongThuc) {
+                            BigDecimal tong, String phuongThuc, String trangThai) {
     }
 
     private final DonHangRepository donHangRepo;
@@ -208,6 +215,7 @@ public class ThanhToanService {
         tt.setTienThua(tienThua);
         tt.setNgayThanhToan(LocalDateTime.now());
         tt.setMaGiaoDich(khoa);
+        tt.setTrangThai(HOAN_THANH);
         tt = thanhToanRepo.save(tt);
         return dungHoaDon(tt);
     }
@@ -243,10 +251,191 @@ public class ThanhToanService {
             List<DonLichSu> kq = new ArrayList<>();
             for (ThanhToanDonHang x : ds) {
                 kq.add(new DonLichSu(x.getId(), x.getDonHang().getId(), x.getNhanVien().getHoTen(),
-                        x.getNgayThanhToan(), x.getTongThanhToan(), x.getPhuongThuc()));
+                        x.getNgayThanhToan(), x.getTongThanhToan(), x.getPhuongThuc(), x.getTrangThai()));
             }
             return kq;
         });
+    }
+
+    // ===== Chỉnh sửa đơn hàng =====
+
+    public record ChiTietSua(Long id, String ten, BigDecimal donGia, BigDecimal giaTopping,
+                             List<String> topping, int soLuong) {
+    }
+
+    public record DonSua(Long thanhToanId, Long maDon, String trangThai, List<ChiTietSua> dong, String khuyenMai,
+                         BigDecimal tienHang, BigDecimal giamGia, BigDecimal tong,
+                         String phuongThuc, BigDecimal tienKhach, String ghiChu) {
+    }
+
+    public record KetQuaSua(HoaDon hoaDon, String canhBao) {
+    }
+
+    // Dữ liệu đưa lên màn hình chỉnh sửa
+    public DonSua layDeSua(Long thanhToanId) {
+        return doc.execute(st -> {
+            ThanhToanDonHang tt = thanhToanRepo.findById(thanhToanId)
+                    .orElseThrow(() -> new LoiNghiepVu("Không tìm thấy đơn hàng"));
+            List<ChiTietDonHang> cts = chiTietRepo.findByDonHang_IdOrderByIdAsc(tt.getDonHang().getId());
+            Map<Long, List<ChiTietDonHangTopping>> tp = toppingTheoDong(cts);
+            List<ChiTietSua> dong = new ArrayList<>();
+            for (ChiTietDonHang ct : cts) {
+                List<ChiTietDonHangTopping> tps = tp.getOrDefault(ct.getId(), List.of());
+                BigDecimal giaTp = tps.stream().map(ChiTietDonHangTopping::getGiaTopping)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                dong.add(new ChiTietSua(ct.getId(), ct.getSanPham().getTen(), BigDecimal.valueOf(ct.getDonGia()), giaTp,
+                        tps.stream().map(ChiTietDonHangTopping::getTenTopping).toList(), ct.getSoLuong()));
+            }
+            return new DonSua(tt.getId(), tt.getDonHang().getId(), tt.getTrangThai(), dong, tt.getMaKhuyenMai(),
+                    tt.getTienHang(), tt.getGiamGia(), tt.getTongThanhToan(),
+                    tt.getPhuongThuc(), tt.getTienKhachDua(), tt.getGhiChu());
+        });
+    }
+
+    // Cập nhật một đơn đã thanh toán: trạng thái, số lượng từng món (0 = bỏ món), thông tin giao dịch.
+    // - Chọn "Đã hủy": chỉ đổi trạng thái (đơn bị loại khỏi thống kê, không sửa lại được nữa).
+    // - Số lượng đổi: tính lại tiền hàng, khuyến mãi (giữ mã cũ nếu còn đủ đơn tối thiểu), tổng tiền
+    //   và cập nhật don_hang.tong_tien để trang Thống kê đúng.
+    public KetQuaSua capNhatDon(Long thanhToanId, String trangThai, Map<Long, Integer> soLuongMoi,
+                                String phuongThuc, BigDecimal tienKhach, String ghiChu) {
+        if (thanhToanId == null) throw new LoiNghiepVu("Không xác định được đơn hàng");
+        if (trangThai == null || !TRANG_THAI.contains(trangThai)) throw new LoiNghiepVu("Trạng thái đơn không hợp lệ");
+        if (!TIEN_MAT.equals(phuongThuc) && !CHUYEN_KHOAN.equals(phuongThuc)) {
+            throw new LoiNghiepVu("Phương thức thanh toán không hợp lệ");
+        }
+        String note = ghiChu == null ? "" : ghiChu.trim();
+        if (note.length() > 200) throw new LoiNghiepVu("Ghi chú tối đa 200 ký tự");
+        final String ghiChuLuu = note.isEmpty() ? null : note;
+        final Map<Long, Integer> sl = soLuongMoi == null ? Map.of() : soLuongMoi;
+
+        return ghi.execute(st -> {
+            ThanhToanDonHang tt = thanhToanRepo.findById(thanhToanId)
+                    .orElseThrow(() -> new LoiNghiepVu("Không tìm thấy đơn hàng"));
+            if (DA_HUY.equals(tt.getTrangThai())) throw new LoiNghiepVu("Đơn đã hủy, không thể chỉnh sửa");
+
+            // Hủy đơn: chỉ đổi trạng thái, giữ nguyên số liệu để còn xem lại
+            if (DA_HUY.equals(trangThai)) {
+                tt.setTrangThai(DA_HUY);
+                tt.setGhiChu(ghiChuLuu);
+                thanhToanRepo.save(tt);
+                return new KetQuaSua(dungHoaDon(tt), null);
+            }
+
+            List<ChiTietDonHang> cts = chiTietRepo.findByDonHang_IdOrderByIdAsc(tt.getDonHang().getId());
+            java.util.Set<Long> idHopLe = new java.util.HashSet<>();
+            for (ChiTietDonHang ct : cts) idHopLe.add(ct.getId());
+            for (Long id : sl.keySet()) {
+                if (!idHopLe.contains(id)) throw new LoiNghiepVu("Món cần sửa không thuộc đơn hàng này");
+            }
+            Map<Long, List<ChiTietDonHangTopping>> tp = toppingTheoDong(cts);
+
+            boolean doiSoLuong = false;
+            int conLai = 0;
+            BigDecimal tienHang = BigDecimal.ZERO;
+            for (ChiTietDonHang ct : cts) {
+                int moi = sl.getOrDefault(ct.getId(), ct.getSoLuong());
+                if (moi < 0 || moi > 99) throw new LoiNghiepVu("Số lượng mỗi món phải từ 0 đến 99");
+                if (moi != ct.getSoLuong()) doiSoLuong = true;
+                if (moi > 0) {
+                    conLai++;
+                    BigDecimal giaTp = tp.getOrDefault(ct.getId(), List.of()).stream()
+                            .map(ChiTietDonHangTopping::getGiaTopping).reduce(BigDecimal.ZERO, BigDecimal::add);
+                    tienHang = tienHang.add(BigDecimal.valueOf(ct.getDonGia()).add(giaTp).multiply(BigDecimal.valueOf(moi)));
+                }
+            }
+            if (conLai == 0) {
+                throw new LoiNghiepVu("Đơn phải còn ít nhất một món. Muốn bỏ cả đơn, hãy chọn trạng thái \"Đã hủy\".");
+            }
+
+            String canhBao = null;
+            BigDecimal giam;
+            BigDecimal tong;
+            if (doiSoLuong) {
+                for (ChiTietDonHang ct : cts) {
+                    int moi = sl.getOrDefault(ct.getId(), ct.getSoLuong());
+                    if (moi == ct.getSoLuong()) continue;
+                    if (moi == 0) {
+                        chiTietToppingRepo.deleteAll(tp.getOrDefault(ct.getId(), List.of()));
+                        chiTietToppingRepo.flush();
+                        chiTietRepo.delete(ct);
+                    } else {
+                        ct.setSoLuong(moi);
+                        chiTietRepo.save(ct);
+                    }
+                }
+                giam = BigDecimal.ZERO;
+                KhuyenMai km = tt.getKhuyenMai();
+                if (km != null) {
+                    if (km.getDonToiThieu() != null && tienHang.compareTo(BigDecimal.valueOf(km.getDonToiThieu())) < 0) {
+                        canhBao = "Đơn không còn đạt mức tối thiểu của mã " + km.getMa() + " nên đã bỏ khuyến mãi.";
+                        tt.setKhuyenMai(null);
+                        tt.setMaKhuyenMai(null);
+                    } else {
+                        giam = giamKhuyenMai(km, tienHang);
+                    }
+                }
+                tong = tienHang.subtract(giam);
+            } else {
+                tienHang = tt.getTienHang();
+                giam = tt.getGiamGia();
+                tong = tt.getTongThanhToan();
+            }
+
+            BigDecimal khach;
+            BigDecimal thua;
+            if (CHUYEN_KHOAN.equals(phuongThuc)) {
+                khach = tong;
+                thua = BigDecimal.ZERO;
+            } else {
+                if (tienKhach == null || tienKhach.signum() <= 0) throw new LoiNghiepVu("Vui lòng nhập số tiền khách đưa");
+                if (tienKhach.compareTo(TIEN_KHACH_TOI_DA) > 0 || tienKhach.stripTrailingZeros().scale() > 0) {
+                    throw new LoiNghiepVu("Số tiền khách đưa không hợp lệ");
+                }
+                if (tienKhach.compareTo(tong) < 0) {
+                    throw new LoiNghiepVu("Tổng tiền của đơn là " + String.format("%,d", tong.longValue()).replace(',', '.')
+                            + "đ, tiền khách đưa phải từ mức này trở lên");
+                }
+                khach = tienKhach;
+                thua = khach.subtract(tong);
+            }
+
+            tt.setTienHang(tienHang);
+            tt.setGiamGia(giam);
+            tt.setTongThanhToan(tong);
+            tt.setPhuongThuc(phuongThuc);
+            tt.setTienKhachDua(khach);
+            tt.setTienThua(thua);
+            tt.setTrangThai(trangThai);
+            tt.setGhiChu(ghiChuLuu);
+            thanhToanRepo.save(tt);
+
+            DonHang dh = tt.getDonHang();
+            dh.setTongTien(tong.longValueExact());
+            donHangRepo.save(dh);
+            return new KetQuaSua(dungHoaDon(tt), canhBao);
+        });
+    }
+
+    // Cùng cách tính với BanHangService.apDung nhưng không kiểm tra ngày (mã đã được dùng hợp lệ lúc bán)
+    private static BigDecimal giamKhuyenMai(KhuyenMai k, BigDecimal tienHang) {
+        BigDecimal giam;
+        if ("GIAM_TIEN".equals(k.getLoai())) {
+            giam = BigDecimal.valueOf(k.getSoTienGiam() == null ? 0 : k.getSoTienGiam());
+        } else {
+            giam = tienHang.multiply(BigDecimal.valueOf(k.getPhanTramGiam()))
+                    .divide(BigDecimal.valueOf(100), 0, java.math.RoundingMode.HALF_UP);
+        }
+        return giam.min(tienHang).max(BigDecimal.ZERO);
+    }
+
+    private Map<Long, List<ChiTietDonHangTopping>> toppingTheoDong(List<ChiTietDonHang> cts) {
+        Map<Long, List<ChiTietDonHangTopping>> kq = new HashMap<>();
+        if (cts.isEmpty()) return kq;
+        List<Long> ids = cts.stream().map(ChiTietDonHang::getId).toList();
+        for (ChiTietDonHangTopping t : chiTietToppingRepo.findByChiTietDonHang_IdIn(ids)) {
+            kq.computeIfAbsent(t.getChiTietDonHang().getId(), k -> new ArrayList<>()).add(t);
+        }
+        return kq;
     }
 
     // Dựng hóa đơn từ dữ liệu đã lưu (dùng cho cả lúc vừa thanh toán và xem lại)
@@ -271,6 +460,6 @@ public class ThanhToanService {
         }
         return new HoaDon(tt.getDonHang().getId(), tt.getNgayThanhToan(), tt.getNhanVien().getHoTen(), dong,
                 tt.getTienHang(), tt.getMaKhuyenMai(), tt.getGiamGia(), tt.getTongThanhToan(),
-                tt.getPhuongThuc(), tt.getTienKhachDua(), tt.getTienThua());
+                tt.getPhuongThuc(), tt.getTienKhachDua(), tt.getTienThua(), tt.getTrangThai(), tt.getGhiChu());
     }
 }

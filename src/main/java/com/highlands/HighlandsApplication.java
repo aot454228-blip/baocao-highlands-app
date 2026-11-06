@@ -31,7 +31,7 @@ public class HighlandsApplication {
         } catch (Throwable e) {
             cho.dong();
             JOptionPane.showMessageDialog(null,
-                    "Không kết nối được cơ sở dữ liệu. Kiểm tra SQL Server và application.properties.\\n\\n"
+                    "Không kết nối được cơ sở dữ liệu. Kiểm tra SQL Server và application.properties.\n\n"
                             + nguyenNhan(e),
                     "Lỗi kết nối", JOptionPane.ERROR_MESSAGE);
             System.exit(1);

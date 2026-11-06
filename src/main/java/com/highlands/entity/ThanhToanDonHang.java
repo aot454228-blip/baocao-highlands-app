@@ -55,6 +55,13 @@ public class ThanhToanDonHang {
     @Column(name = "ma_giao_dich", columnDefinition = "NVARCHAR(64) NOT NULL")
     private String maGiaoDich;
 
+    // Trạng thái đơn: Đang xử lý / Đang giao / Hoàn thành / Đã hủy (đơn Đã hủy không tính vào thống kê)
+    @Column(name = "trang_thai", columnDefinition = "NVARCHAR(30) NOT NULL DEFAULT N'Hoàn thành'")
+    private String trangThai = "Hoàn thành";
+
+    @Column(name = "ghi_chu", columnDefinition = "NVARCHAR(200)")
+    private String ghiChu;
+
     public ThanhToanDonHang() {
     }
 
@@ -84,4 +91,8 @@ public class ThanhToanDonHang {
     public void setNgayThanhToan(LocalDateTime ngayThanhToan) { this.ngayThanhToan = ngayThanhToan; }
     public String getMaGiaoDich() { return maGiaoDich; }
     public void setMaGiaoDich(String maGiaoDich) { this.maGiaoDich = maGiaoDich; }
+    public String getTrangThai() { return trangThai; }
+    public void setTrangThai(String trangThai) { this.trangThai = trangThai; }
+    public String getGhiChu() { return ghiChu; }
+    public void setGhiChu(String ghiChu) { this.ghiChu = ghiChu; }
 }

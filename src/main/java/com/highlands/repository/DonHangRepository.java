@@ -12,6 +12,8 @@ public interface DonHangRepository extends JpaRepository<DonHang, Long> {
 
     // Mỗi dòng: [ngày, tổng doanh thu của ngày đó]
     @Query("select d.ngayDat, sum(d.tongTien) from DonHang d "
-            + "where d.ngayDat between :tu and :den group by d.ngayDat order by d.ngayDat")
+            + "where d.ngayDat between :tu and :den"
+            + " and not exists (select 1 from ThanhToanDonHang t where t.donHang = d and t.trangThai = 'Đã hủy') "
+            + "group by d.ngayDat order by d.ngayDat")
     List<Object[]> doanhThuTheoNgay(@Param("tu") LocalDate tu, @Param("den") LocalDate den);
 }
